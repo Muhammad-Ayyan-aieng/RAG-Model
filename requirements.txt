@@ -28,4 +28,4 @@ pydantic-settings==2.2.1
 numpy==1.26.4
 
 # Quantization
-fast-sentence-transformers==1.1.0
+fast-sentence-transformers>=0.5
