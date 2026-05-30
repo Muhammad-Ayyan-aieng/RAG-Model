@@ -4,6 +4,7 @@ from datetime import datetime
 from fast_sentence_transformers import FastSentenceTransformer as SentenceTransformer 
 from src.config import settings
 from src.utils.logger import get_logger
+from src.database.chroma_client import get_collection
 
 logger = get_logger(__name__)
 
