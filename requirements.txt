@@ -11,8 +11,8 @@ chromadb==0.5.0
 # Embeddings
 sentence-transformers==2.7.0
 
-# LLM
-openai==1.30.0
+# LLM - Groq
+groq==0.11.0
 
 # PDF parsing
 pymupdf==1.24.5
@@ -23,3 +23,6 @@ python-dotenv==1.0.1
 # Data validation
 pydantic==2.7.1
 pydantic-settings==2.2.1
+
+# NumPy (compatible version)
+numpy==1.26.4
