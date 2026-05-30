@@ -9,10 +9,9 @@ python-multipart==0.0.9
 chromadb==0.5.0
 
 # Embeddings
-sentence-transformers>=3.0.0
-fast-sentence-transformers>=0.5
+sentence-transformers==2.7.0
 
-# LLM - Groq
+# LLM - Groq (Free tier)
 groq==0.11.0
 
 # PDF parsing
