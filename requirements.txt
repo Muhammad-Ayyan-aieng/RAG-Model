@@ -26,3 +26,6 @@ pydantic-settings==2.2.1
 
 # NumPy (compatible version)
 numpy==1.26.4
+
+# Quantization
+fast-sentence-transformers==1.1.0

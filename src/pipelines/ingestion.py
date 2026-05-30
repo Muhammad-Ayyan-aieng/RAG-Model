@@ -1,8 +1,7 @@
 import uuid
 import hashlib
 from datetime import datetime
-from sentence_transformers import SentenceTransformer
-from src.database.chroma_client import get_collection
+from fast_sentence_transformers import FastSentenceTransformer as SentenceTransformer 
 from src.config import settings
 from src.utils.logger import get_logger
 
@@ -17,13 +16,13 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
 
-def get_embedding_model() -> SentenceTransformer:
+def get_embedding_model():
     global _embedding_model
 
     if _embedding_model is None:
         logger.info("Loading embedding model — this takes a moment on first run")
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        logger.info("Embedding model loaded successfully")
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2", quantize=True)
+        logger.info("Embedding model loaded successfully (quantized mode - lower memory)")
 
     return _embedding_model
 
