@@ -57,6 +57,7 @@ app.include_router(query.router, prefix="/query", tags=["Query"])
 # ================================
 # Serve Frontend
 # ================================
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
