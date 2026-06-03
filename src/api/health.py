@@ -16,12 +16,12 @@ router = APIRouter()
 async def health_check():
     logger.debug("Health check requested")
 
-    chromadb_status, total_chunks, total_documents = _check_chromadb()
+    qdrant_status, total_documents, total_chunks = _check_qdrant()
 
     return HealthResponse(
         status="healthy",
         environment=settings.APP_ENV,
-        chromadb=chromadb_status,
+        qdrant=qdrant_status, 
         total_documents=total_documents,
         total_chunks=total_chunks
     )
@@ -30,36 +30,32 @@ async def health_check():
 # ================================
 # Internal helpers
 # ================================
-def _check_chromadb() -> tuple[str, int, int]:
+def _check_qdrant() -> tuple[str, int, int]:
     try:
-        collection = get_collection()
-        total_chunks = collection.count()
-        total_documents = _count_unique_documents(collection)
-        return "connected", total_chunks, total_documents
-
-    except Exception as e:
-        logger.error(f"ChromaDB health check failed: {e}")
-        return "disconnected", 0, 0
-
-
-def _count_unique_documents(collection) -> int:
-    try:
-        if collection.count() == 0:
-            return 0
-
-        results = collection.get(include=["metadatas"])
-
-        if not results["metadatas"]:
-            return 0
-
-        unique_ids = set(
-            metadata["document_id"]
-            for metadata in results["metadatas"]
-            if "document_id" in metadata
+        client = get_vector_client()
+        collection_name = get_collection_name()
+        
+        # Get collection info
+        collection_info = client.get_collection(collection_name)
+        total_chunks = collection_info.points_count
+        
+        # Get unique document IDs from payloads
+        result = client.scroll(
+            collection_name=collection_name,
+            limit=10000,
+            with_payload=True
         )
-
-        return len(unique_ids)
+        points = result[0]
+        
+        unique_docs = set()
+        for point in points:
+            if point.payload and "document_id" in point.payload:
+                unique_docs.add(point.payload["document_id"])
+        
+        total_documents = len(unique_docs)
+        
+        return "connected", total_documents, total_chunks
 
     except Exception as e:
-        logger.error(f"Failed to count unique documents: {e}")
-        return 0
+        logger.error(f"Qdrant health check failed: {e}")
+        return "disconnected", 0, 0
