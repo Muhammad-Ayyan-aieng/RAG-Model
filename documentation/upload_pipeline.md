@@ -55,7 +55,7 @@ POST /documents/upload
 │
 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 6. STORAGE (_store_in_chromadb)                             │
+│ 6. STORAGE (_store_in_qdrant)                             │
 │ - Generate unique IDs: {doc_id}chunk{i}                     │
 │ - Store: ids, embeddings, documents, metadatas              │
 │ - Metadata includes: filename, chunk_index, timestamp,      │

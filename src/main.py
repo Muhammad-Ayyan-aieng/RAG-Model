@@ -6,7 +6,7 @@ from src.utils.logger import setup_logging, get_logger
 
 from src.config import settings
 from src.api import documents, query, health
-from src.database.chroma_client import init_chroma
+from src.database.vector_client import init_vector_client
 
 logger = get_logger(__name__)
 
@@ -17,8 +17,8 @@ async def lifespan(app: FastAPI):
     # ================================
     setup_logging() 
     print(f"Starting RAG Assistant in {settings.APP_ENV} mode")
-    init_chroma()
-    print("ChromaDB initialized")
+    init_vector_client()
+    print("Vector DB initialized")
     yield
     # ================================
     # Shutdown

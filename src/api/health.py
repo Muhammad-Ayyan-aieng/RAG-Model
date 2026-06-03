@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from src.database.chroma_client import get_collection
+from src.database.vector_client import get_vector_client, get_collection_name
 from src.models.schemas import HealthResponse
 from src.config import settings
 from src.utils.logger import get_logger

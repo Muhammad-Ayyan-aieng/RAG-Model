@@ -2,25 +2,27 @@
 
 ## Overview
 
-The application is containerized with Docker and deployed to Hugging Face Spaces.
+The application is containerized with Docker and deployed to Hugging Face Spaces. The vector database (Qdrant Cloud) runs externally, so your data persists across Space restarts.
 
 ## Prerequisites
 
-|      Requirement      |                 Check                   |
-|-----------------------|-----------------------------------------|
-| Hugging Face account  | [huggingface.co](https://huggingface.co)|
-| Git installed         | `git --version`                         |
-| Docker (local testing)| `docker --version`                      |
+| Requirement | Check |
+|-------------|-------|
+| Hugging Face account | [huggingface.co](https://huggingface.co) |
+| Qdrant Cloud account | [qdrant.tech](https://qdrant.tech) |
+| Groq API account | [console.groq.com](https://console.groq.com) |
+| Git installed | `git --version` |
+| Docker (local testing) | `docker --version` |
 
 ## Deployment Files
 
-|       File        |              Purpose                   |
-|-------------------|----------------------------------------|
-| `Dockerfile`      | Defines container build                |
-| `requirements.txt`| Python dependencies                    |
-| `README.md`       | Space configuration (YAML front matter)|
-| `src/`            | Backend code                           |
-| `frontend/`       | HTML files                             |
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Defines container build |
+| `requirements.txt` | Python dependencies |
+| `README.md` | Space configuration (YAML front matter) |
+| `src/` | Backend code |
+| `frontend/` | HTML files |
 
 ## Dockerfile Essentials
 
@@ -49,47 +51,89 @@ app_port: 7860
 pinned: false
 ---
 Deployment Steps
-Create Space: huggingface.co/new-space → Select "Docker" SDK
+1. Create Space
+Go to huggingface.co/new-space → Select "Docker" SDK
 
-Clone Space locally:
-
+2. Clone Space Locally
 bash
 git clone https://huggingface.co/spaces/your-username/space-name
-Copy code into cloned directory
+3. Copy Code into Cloned Directory
+Copy your entire project (src/, frontend/, requirements.txt, Dockerfile, README.md)
 
-Push to Hugging Face:
-
+4. Push to Hugging Face
 bash
 git add .
 git commit -m "Initial deployment"
 git push
-Add secrets in Space Settings → Repository secrets:
+5. Add Secrets in Space Settings
+Go to your Space → Settings → Repository secrets
 
-GROQ_API_KEY
-
-ADMIN_PASSWORD
-
-Environment Variables (Secrets)
-Variable	Required	Where to Get
+Required Secrets
+Secret	Required	Where to Get
 GROQ_API_KEY	Yes	console.groq.com
 ADMIN_PASSWORD	Yes	Your chosen password
-Important Limitations
+QDRANT_URL	Yes	Qdrant Cloud dashboard (cluster URL)
+QDRANT_API_KEY	Yes	Qdrant Cloud dashboard (API key)
+Environment Variables (Optional)
+Variable	Default	Purpose
+QDRANT_COLLECTION_NAME	documents	Collection name in Qdrant
+QDRANT_VECTOR_SIZE	384	Embedding dimension
+APP_ENV	development	Set to production for deployment
+Important: Data Persistence
 Feature	Free Tier	Paid Tier
 RAM	16 GB	More available
-Storage	50 GB (ephemeral)	Persistent available
-Data persistence	❌ Lost on restart	✅ Survives restarts
+Storage (Space)	50 GB (ephemeral)	Persistent available
+Qdrant Cloud Data	✅ Persistent	✅ Persistent
 Cost	Free	Starts at $5/month
-Data persistence warning: On free tier, all uploaded documents and ChromaDB data are deleted when the Space restarts.
+Key difference from ChromaDB: With Qdrant Cloud, your vector database runs externally. Even if your Space restarts, your uploaded documents and embeddings remain safe in Qdrant's cloud.
 
+Architecture After Migration
+text
+┌─────────────────────────────────────────────────────────────┐
+│                  HUGGING FACE SPACE                         │
+│                  (Stateless - Code Only)                    │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  FastAPI    │  │  Frontend   │  │  Embedding  │         │
+│  │  Backend    │  │  (HTML/CSS) │  │  Model      │         │
+│  └──────┬──────┘  └─────────────┘  └─────────────┘         │
+└─────────┼───────────────────────────────────────────────────┘
+          │
+          │ HTTPS
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     QDRANT CLOUD                            │
+│                    (Stateful - Persistent)                  │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Collection: documents                              │   │
+│  │  - All embeddings (384 dims)                        │   │
+│  │  - All document chunks (text)                       │   │
+│  │  - Metadata (filename, document_id, chunk_index)    │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 Troubleshooting
 Issue	Solution
 Port error	Ensure Dockerfile uses port 7860
-Missing API keys	Add secrets in Settings
+Missing API keys	Add all secrets in Settings
+Qdrant connection failed	Check QDRANT_URL and QDRANT_API_KEY
 Build fails	Check requirements.txt syntax
 App won't start	View logs in Build & Deploy section
+Data lost after restart	Normal with ChromaDB; fixed with Qdrant Cloud
 Related Files
 File	Purpose in Deployment
 Dockerfile	Container definition
-requirements.txt	Dependencies
+requirements.txt	Dependencies (qdrant-client, not chromadb)
 README.md	Space configuration
-.env	Not committed (secrets managed separately)
+.env	Not committed (secrets managed separately in HF)
+src/database/vector_client.py	Qdrant Cloud connection
+Key Takeaway
+With Qdrant Cloud, your data is persistent:
+
+✅ Uploaded documents survive Space restarts
+
+✅ Embeddings never get deleted unexpectedly
+
+✅ Free tier with no credit card required
+
+✅ Production-ready architecture (separate database from app)

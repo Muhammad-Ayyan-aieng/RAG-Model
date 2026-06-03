@@ -2,7 +2,8 @@ import uuid
 import hashlib
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
-from src.database.chroma_client import get_collection
+from src.database.vector_client import get_vector_client, get_collection_name
+from qdrant_client.models import PointStruct
 from src.config import settings
 from src.utils.logger import get_logger
 
@@ -47,7 +48,7 @@ def ingest_document(text: str, filename: str, content_hash: str = None) -> dict:
     embeddings = _create_embeddings(chunks)
     logger.debug("Embeddings created")
 
-    _store_in_chromadb(
+    _store_in_qdrant(
         chunks=chunks,
         embeddings=embeddings,
         document_id=document_id,
@@ -110,7 +111,7 @@ def _create_embeddings(chunks: list[str]) -> list[list[float]]:
     return embeddings.tolist()
 
 
-def _store_in_chromadb(
+def _store_in_qdrant(
     chunks: list[str],
     embeddings: list[list[float]],
     document_id: str,
@@ -118,29 +119,25 @@ def _store_in_chromadb(
     uploaded_at: str,
     content_hash: str = None
 ) -> None:
-    collection = get_collection()
-
-    ids = [
-        f"{document_id}_chunk_{i}"
-        for i in range(len(chunks))
-    ]
-
-    metadatas = [
-        {
-            "document_id": document_id,
-            "filename": filename,
-            "chunk_index": i,
-            "uploaded_at": uploaded_at,
-            "content_hash": content_hash
-        }
-        for i in range(len(chunks))
-    ]
-
-    collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=chunks,
-        metadatas=metadatas
-    )
-
-    logger.debug(f"Stored {len(chunks)} chunks in ChromaDB")
+    client = get_vector_client()
+    collection_name = get_collection_name()
+    
+    points = []
+    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        from qdrant_client.models import PointStruct
+        point = PointStruct(
+            id = str(uuid.uuid4())  ,
+            vector=embedding,
+            payload={
+                "document_id": document_id,
+                "filename": filename,
+                "chunk_index": i,
+                "uploaded_at": uploaded_at,
+                "content_hash": content_hash,
+                "text": chunk
+            }
+        )
+        points.append(point)
+    
+    client.upsert(collection_name=collection_name, points=points)
+    logger.debug(f"Stored {len(chunks)} chunks in Qdrant")

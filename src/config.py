@@ -17,10 +17,12 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str
 
     # ================================
-    # ChromaDB
+    # Vector Database (Qdrant)
     # ================================
-    CHROMA_PATH: str = "./chroma_data"
-    CHROMA_COLLECTION_NAME: str = "documents"
+    QDRANT_URL: str
+    QDRANT_API_KEY: str
+    QDRANT_COLLECTION_NAME: str = "documents"
+    QDRANT_VECTOR_SIZE: int = 384
 
     # ================================
     # Public User Limits
@@ -44,6 +46,13 @@ class Settings(BaseSettings):
     def groq_key_must_not_be_empty(cls, v: str) -> str:
         if not v or v == "your_groq_api_key_here":
             raise ValueError("GROQ_API_KEY is not set in your .env file")
+        return v
+    
+    @field_validator("QDRANT_API_KEY")
+    @classmethod
+    def qdrant_key_must_not_be_empty(cls, v: str) -> str:
+        if not v or v == "your_qdrant_api_key_here":
+            raise ValueError("QDRANT_API_KEY is not set in your .env file")
         return v
 
     @field_validator("ADMIN_PASSWORD")

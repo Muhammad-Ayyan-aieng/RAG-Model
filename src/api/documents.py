@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from src.core.auth import get_user_role, require_admin
 from src.core.limiter import validate_upload
 from src.pipelines.ingestion import ingest_document
-from src.database.chroma_client import get_collection
+from src.database.vector_client import get_vector_client, get_collection_name
 from src.utils.file_parser import extract_text
 from src.utils.text_cleaner import clean_text
 from src.models.schemas import (
@@ -17,6 +17,22 @@ import hashlib
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+# ================================
+# Helper to get all points
+# ================================
+def get_all_points():
+    client = get_vector_client()
+    collection_name = get_collection_name()
+    
+    # Scroll through all points
+    result = client.scroll(
+        collection_name=collection_name,
+        limit=10000,
+        with_payload=True
+    )
+    return result[0]  # Returns list of points
 
 
 # ================================
@@ -42,21 +58,27 @@ async def upload_document(
     # ================================
     # Check for duplicate document by filename
     # ================================
-    collection = get_collection()
+    client = get_vector_client()
+    collection_name = get_collection_name()
     
     # Search for existing document with same filename
-    existing = collection.get(
-        where={"filename": file.filename},
-        include=["metadatas"]
-    )
-    
-    if existing["ids"]:
-        logger.warning(f"Duplicate upload blocked: {file.filename}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Document '{file.filename}' already exists. Delete it first if you want to re-upload."
+    try:
+        search_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [{"key": "filename", "match": {"value": file.filename}}]
+            },
+            limit=1
         )
-    # ================================
+        if search_result[0]:
+            logger.warning(f"Duplicate upload blocked: {file.filename}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Document '{file.filename}' already exists. Delete it first if you want to re-upload."
+            )
+    except Exception as e:
+        # Collection might be empty, that's fine
+        pass
 
     try:
         raw_text = await extract_text(file)
@@ -69,23 +91,27 @@ async def upload_document(
             )
 
         # ================================
-        # Check for duplicate content by hash (same content, different filename)
+        # Check for duplicate content by hash
         # ================================
         content_hash = hashlib.md5(clean.encode()).hexdigest()
         
-        existing_by_hash = collection.get(
-            where={"content_hash": content_hash},
-            include=["metadatas"]
-        )
-        
-        if existing_by_hash["ids"]:
-            existing_filename = existing_by_hash["metadatas"][0][0].get("filename", "unknown")
-            logger.warning(f"Duplicate content blocked: {file.filename} (matches existing document: {existing_filename})")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Document content already exists in document '{existing_filename}'. Delete that document first if you want to re-upload."
+        try:
+            hash_result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter={
+                    "must": [{"key": "content_hash", "match": {"value": content_hash}}]
+                },
+                limit=1
             )
-        # ================================
+            if hash_result[0]:
+                existing_filename = hash_result[0][0].payload.get("filename", "unknown")
+                logger.warning(f"Duplicate content blocked: {file.filename} (matches existing document: {existing_filename})")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Document content already exists in document '{existing_filename}'. Delete that document first if you want to re-upload."
+                )
+        except Exception:
+            pass
 
         result = ingest_document(clean, file.filename, content_hash)
 
@@ -130,14 +156,28 @@ async def list_documents(
     logger.debug(f"List documents requested — role: {role}")
 
     try:
-        collection = get_collection()
-
-        if collection.count() == 0:
+        points = get_all_points()
+        
+        if not points:
             return DocumentListResponse(total=0, documents=[])
 
-        results = collection.get(include=["metadatas"])
-
-        documents = _build_document_list(results["metadatas"])
+        # Build document list from points
+        documents_dict = {}
+        for point in points:
+            payload = point.payload
+            doc_id = payload.get("document_id")
+            
+            if doc_id not in documents_dict:
+                documents_dict[doc_id] = {
+                    "document_id": doc_id,
+                    "filename": payload.get("filename", "unknown"),
+                    "chunks_count": 1,
+                    "uploaded_at": payload.get("uploaded_at", "unknown")
+                }
+            else:
+                documents_dict[doc_id]["chunks_count"] += 1
+        
+        documents = [DocumentInfo(**doc) for doc in documents_dict.values()]
 
         return DocumentListResponse(
             total=len(documents),
@@ -165,26 +205,36 @@ async def delete_document(
     logger.info(f"Delete request — document_id: {document_id} role: {role}")
 
     try:
-        collection = get_collection()
-
-        existing = collection.get(
-            where={"document_id": document_id},
-            include=["metadatas"]
+        client = get_vector_client()
+        collection_name = get_collection_name()
+        
+        # First, find all points with this document_id
+        search_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [{"key": "document_id", "match": {"value": document_id}}]
+            },
+            limit=10000,
+            with_payload=True
         )
-
-        if not existing["ids"]:
+        
+        points = search_result[0]
+        if not points:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Document '{document_id}' not found"
             )
-
-        collection.delete(
-            where={"document_id": document_id}
+        
+        # Delete each point
+        point_ids = [point.id for point in points]
+        client.delete(
+            collection_name=collection_name,
+            points_selector=point_ids
         )
 
         logger.info(
             f"Deleted document: {document_id} — "
-            f"{len(existing['ids'])} chunks removed"
+            f"{len(points)} chunks removed"
         )
 
         return DocumentDeleteResponse(
@@ -201,28 +251,3 @@ async def delete_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete document"
         )
-
-
-# ================================
-# Internal helpers
-# ================================
-def _build_document_list(metadatas: list[dict]) -> list[DocumentInfo]:
-    seen = {}
-
-    for metadata in metadatas:
-        doc_id = metadata.get("document_id")
-
-        if not doc_id:
-            continue
-
-        if doc_id not in seen:
-            seen[doc_id] = DocumentInfo(
-                document_id=doc_id,
-                filename=metadata.get("filename", "unknown"),
-                chunks_count=1,
-                uploaded_at=metadata.get("uploaded_at", "unknown")
-            )
-        else:
-            seen[doc_id].chunks_count += 1
-
-    return list(seen.values())

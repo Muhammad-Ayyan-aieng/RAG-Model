@@ -1,85 +1,98 @@
-# Vector Database: ChromaDB Deep Dive
+# Vector Database: Qdrant Cloud
 
-## What is ChromaDB?
+## What is Qdrant?
 
-ChromaDB is an open-source vector database designed specifically for AI applications. It stores embeddings (vectors) and enables fast similarity search.
+Qdrant is an open-source vector database written in **Rust**, designed for production-scale AI applications. Unlike ChromaDB (embedded), Qdrant uses a **client-server architecture** with persistent cloud storage.
 
-**File responsible:** `src/database/chroma_client.py`
+**File responsible:** `src/database/vector_client.py`
 
 ## Why a Vector Database?
 
-|  Operation  |      Regular Database (SQL)     |     Vector Database (ChromaDB)     |
-|-------------|---------------------------------|------------------------------------|
-| Find "pets" | Exact word match only           | Semantic meaning match             |
-| Find similar| Requires pre-defined categories | Finds by vector proximity          |
-| Scale       | Linear scan                     | HNSW indexing for sub-linear search|
-| Data type   | Strings, numbers                | Vectors (arrays of floats)         |
+| Operation | Regular Database (SQL) | Vector Database (Qdrant) |
+|-----------|------------------------|---------------------------|
+| Find "pets" | Exact word match only | Semantic meaning match |
+| Find similar | Requires pre-defined categories | Finds by vector proximity |
+| Scale | Linear scan | HNSW indexing for sub-linear search |
+| Data type | Strings, numbers | Vectors (arrays of floats) |
 
-## ChromaDB Architecture
+## Why We Switched from ChromaDB to Qdrant
+
+| Issue | ChromaDB (Old) | Qdrant Cloud (New) |
+|-------|----------------|-------------------|
+| Architecture | Embedded library | Client-server |
+| Data persistence on HF free tier | ❌ Lost on restart | ✅ Persistent |
+| Free tier model | Credit-based ($5 credits) | Free forever (1GB RAM, 4GB storage) |
+| Production readiness | Prototyping | Enterprise-grade |
+
+## Qdrant Architecture
 ┌─────────────────────────────────────────────────────────────┐
-│ YOUR APPLICATION                                            │
-│ (src/main.py)                                               │
+│ YOUR APPLICATION │
+│ (src/main.py) │
 └─────────────────────────────┬───────────────────────────────┘
 │
-│ collection.add()
-│ collection.query()
+│ client.upsert()
+│ client.query_points()
 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ CHROMADB CLIENT                                             │
-│ (chroma_client.py)                                          │
-│                                                             │
-│ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐             │
-│ │ Persistent  │ │ HNSW        │ │ Metadata    │             │
-│ │ Client      │ │ Index       │ │ Store       │             │
-│ └─────────────┘ └─────────────┘ └─────────────┘             │
-└─────────────────────────────────────────────────────────────┘
-│
-▼
-┌─────────────────────────────────────────────────────────────┐
-│ DISK STORAGE                                                │
-│ ./chroma_data/                                              │
-│                                                             │
-│ ├── chroma.sqlite3 (Metadata & collection info)             │
-│ ├── index/ (HNSW index files)                               │
-│ └── embeddings/ (Vector data)                               │
+│ QDRANT CLOUD │
+│ (Remote Server) │
+│ │
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ │
+│ │ Collection │ │ HNSW │ │ Payload │ │
+│ │ documents │ │ Index │ │ Store │ │
+│ └─────────────┘ └─────────────┘ └─────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 
 text
 
-## How We Initialize ChromaDB
+## How We Initialize Qdrant
 
-**File:** `src/database/chroma_client.py` → `init_chroma()`
+**File:** `src/database/vector_client.py` → `init_vector_client()`
 
 ```python
-def init_chroma() -> None:
-    global _client, _collection
+def init_vector_client() -> None:
+    global _client
     
-    _client = chromadb.PersistentClient(
-        path=settings.CHROMA_PATH  # "./chroma_data"
+    _client = QdrantClient(
+        url=settings.QDRANT_URL,      # Cloud endpoint
+        api_key=settings.QDRANT_API_KEY,
     )
     
-    _collection = _client.get_or_create_collection(
-        name=settings.CHROMA_COLLECTION_NAME,  # "documents"
-        metadata={"hnsw:space": "cosine"}  # Distance metric
+    _client.create_collection(
+        collection_name="documents",
+        vectors_config=VectorParams(
+            size=384,                  # Embedding dimension
+            distance=Distance.COSINE   # Similarity metric
+        )
+    )
+    
+    # Create index for fast deletion
+    _client.create_payload_index(
+        collection_name="documents",
+        field_name="document_id",
+        field_type="keyword"
     )
 Key Decisions
 Setting	Value	Why
-Client Type	PersistentClient	Data saved to disk, survives restarts
+Client Type	QdrantClient (cloud)	Data persists in cloud, survives restarts
 Collection Name	"documents"	All chunks stored together
 Distance Metric	cosine	Best for semantic similarity
-Telemetry	disabled	Prevents memory deadlocks on low-RAM
+Vector Size	384	Matches all-MiniLM-L6-v2 output
+Index Field	document_id	Enables fast document deletion
 Understanding the Collection
 A collection is like a table in SQL. Our documents collection stores:
 
 Field	Type	Example	Purpose
-ids	string	"abc123_chunk_0"	Unique identifier
-embeddings	list[float]	[0.12, -0.45, ...]	384 numbers for search
-documents	string	"Pets allowed Fridays"	Original text
-metadatas	dict	{"filename": "policy.pdf"}	Source information
+id	string (UUID)	"f79a31fb-8432-..."	Unique point identifier
+vector	list[float]	[0.12, -0.45, ...]	384 numbers for search
+payload.text	string	"Pets allowed Fridays"	Original text
+payload.filename	string	"policy.pdf"	Source file
+payload.document_id	string (UUID)	"abc123"	Groups chunks by document
+payload.chunk_index	int	3	Position in document
 HNSW Indexing Explained
 HNSW = Hierarchical Navigable Small World
 
-This is the algorithm ChromaDB uses for fast similarity search.
+This is the algorithm Qdrant uses for fast similarity search.
 
 How It Works (Simplified)
 text
@@ -108,54 +121,86 @@ Memory: ~2-3x raw data size
 
 CRUD Operations
 CREATE (Add embeddings)
-File: src/pipelines/ingestion.py → _store_in_chromadb()
+File: src/pipelines/ingestion.py → _store_in_qdrant()
 
 python
-collection.add(
-    ids=["abc123_chunk_0", "abc123_chunk_1"],
-    embeddings=[[0.12, -0.45, ...], [0.33, 0.21, ...]],
-    documents=["Chunk 1 text", "Chunk 2 text"],
-    metadatas=[{"filename": "doc.pdf"}, {"filename": "doc.pdf"}]
-)
+from qdrant_client.models import PointStruct
+
+points = []
+for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+    point = PointStruct(
+        id=str(uuid.uuid4()),          # Unique UUID per chunk
+        vector=embedding,
+        payload={
+            "document_id": document_id,
+            "filename": filename,
+            "chunk_index": i,
+            "text": chunk,
+            "uploaded_at": uploaded_at,
+            "content_hash": content_hash
+        }
+    )
+    points.append(point)
+
+client.upsert(collection_name="documents", points=points)
 READ (Search/Query)
-File: src/pipelines/retrieval.py → _search_chromadb()
+File: src/pipelines/retrieval.py → _search_qdrant()
 
 python
-results = collection.query(
-    query_embeddings=[[0.12, -0.45, ...]],  # Question embedding
-    n_results=3,                             # Top 3 matches
-    include=["documents", "metadatas", "distances"]
+result = client.query_points(
+    collection_name="documents",
+    query=question_embedding,    # Vector to search for
+    limit=top_k,                 # Number of results
+    with_payload=True            # Return the text
 )
+
+results_list = result.points
 Response structure:
 
 python
-{
-    "documents": [["chunk1", "chunk2", "chunk3"]],
-    "metadatas": [[{...}, {...}, {...}]],
-    "distances": [[0.12, 0.34, 0.56]]
-}
-UPDATE (Get by metadata)
+[
+    Point(
+        id="f79a31fb-8432-...",
+        score=0.88,
+        payload={
+            "text": "Chunk text",
+            "filename": "doc.pdf",
+            "chunk_index": 0
+        }
+    ),
+    ...
+]
+READ (List all documents)
 File: src/api/documents.py → list_documents()
 
 python
-# Get all chunks for a specific document
-results = collection.get(
-    where={"document_id": "abc123"},
-    include=["metadatas"]
+# Scroll through all points (max 10,000 at a time)
+result = client.scroll(
+    collection_name="documents",
+    limit=10000,
+    with_payload=True
 )
+points = result[0]  # List of points
 DELETE
 File: src/api/documents.py → delete_document()
 
 python
-# Delete all chunks for a document
-collection.delete(
-    where={"document_id": "abc123"}
+# Find all points with this document_id
+search_result = client.scroll(
+    collection_name="documents",
+    scroll_filter={
+        "must": [{"key": "document_id", "match": {"value": document_id}}]
+    },
+    limit=10000
 )
-Distance Metrics in ChromaDB
+
+point_ids = [point.id for point in search_result[0]]
+client.delete(collection_name="documents", points_selector=point_ids)
+Distance Metrics in Qdrant
 Metric	Formula	Best For	Our Choice
 cosine	1 - similarity	Text embeddings	✅ Yes
-l2	Euclidean distance	Image embeddings	No
-ip	Inner product	Normalized vectors	No
+euclidean	Euclidean distance	Image embeddings	No
+dot	Dot product	Normalized vectors	No
 Why cosine for text:
 
 Measures angle, not magnitude
@@ -164,83 +209,71 @@ Ignores vector length (longer text = longer vector)
 
 Focuses on meaning, not document length
 
-Metadata Filtering
-ChromaDB supports filtering by metadata during queries:
+Payload Filtering
+Qdrant supports filtering by payload fields during queries:
 
 python
 # Search only within specific document
-results = collection.query(
-    query_embeddings=[question_embedding],
-    where={"filename": "policy.pdf"}  # Filter
-)
-
-# Complex filters
-results = collection.query(
-    query_embeddings=[question_embedding],
-    where={
-        "$and": [
-            {"filename": {"$in": ["policy.pdf", "rules.pdf"]}},
-            {"chunk_index": {"$gte": 0}}
-        ]
+result = client.query_points(
+    collection_name="documents",
+    query=question_embedding,
+    query_filter={
+        "must": [{"key": "filename", "match": {"value": "policy.pdf"}}]
     }
 )
-Persistent Storage Modes
-  Mode	        Location	               Data Persistence	           Use Case
-Persistent	   ./chroma_data/	          Survives restarts	          Production
-Ephemeral	    Memory only	               Lost on restart	           Testing
-HttpClient	    Remote server	          Depends on server	          Distributed
-
-We use Persistent mode (embedded). For billion-scale, we would switch to HttpClient mode with a ChromaDB cluster.
-
+Free Tier Specifications (Qdrant Cloud)
+Resource	Limit
+RAM	1 GB
+Storage	4 GB
+vCPU	0.5
+Vectors	~1-2 million (384 dims)
+Cost	Free forever
+Credit card	Not required
 Data Persistence on Hugging Face
-Issue: On Hugging Face free tier, ./chroma_data/ is on ephemeral disk.
+Issue solved: Qdrant Cloud is external to Hugging Face. Your data lives in Qdrant's cloud, not on Hugging Face's ephemeral disk.
 
-Solutions:
+Result: Data survives Space restarts, rebuilds, and even Space deletion.
 
-Solution	           Complexity	    Cost	                 Persistence
-Accept ephemeral	      Low	        Free	                     No
-Paid persistent storage	  Low	       $5/month	                     Yes
-Backup to Dataset	      Medium	    Free	                     Yes
-External ChromaDB	      High	        Free tier available	         Yes
-Performance Characteristics
-Operation	Time Complexity	Real-World (10K chunks)
-Add chunk	O(log N)	~10ms
-Query (k=3)	O(log N)	~20ms
-Get by ID	O(1)	~5ms
-Delete by filter	O(N)	~50ms
-Count	O(1)	~1ms
-Scaling Limits
-Scale	           Feasibility	        Changes               Needed
-10,000               chunks	              Easy	               None
-100,000              chunks	              Fine	               None
-1,000,000            chunks	            Possible	    More RAM, sharding
-10,000,000           chunks	              Hard	        Distributed cluster
-1,000,000,000        chunks	          Not possible	  Need specialized solution
+Performance Characteristics (Qdrant Cloud)
+Operation	Time Complexity	Real-World (40 chunks)
+Add chunk (upsert)	O(log N)	~50-100ms
+Query (k=3)	O(log N)	~100-200ms
+Scroll (list all)	O(N)	~50ms
+Delete by filter	O(N)	~100ms
+Scaling Limits (Qdrant)
+Scale	Feasibility	Changes Needed
+10,000 points	✅ Easy	None
+100,000 points	✅ Fine	None
+1,000,000 points	✅ Possible	Upgrade Qdrant Cloud tier
+10,000,000 points	✅ Possible	Larger cluster
+1,000,000,000 points	✅ Possible	Distributed cluster
 Related Files
-File	                            Function	              Purpose
-src/database/chroma_client.py	  init_chroma()	             Initialize connection
-src/database/chroma_client.py	  get_collection()	         Access collection
-src/pipelines/ingestion.py	      _store_in_chromadb()	     Add embeddings
-src/pipelines/retrieval.py	      _search_chromadb()	     Query embeddings
-src/api/documents.py	          list_documents()	         Get by metadata
-src/api/documents.py	          delete_document()	         Delete by filter
+File	Function	Purpose
+src/database/vector_client.py	init_vector_client()	Initialize Qdrant connection
+src/database/vector_client.py	get_vector_client()	Access client singleton
+src/pipelines/ingestion.py	_store_in_qdrant()	Add embeddings to Qdrant
+src/pipelines/retrieval.py	_search_qdrant()	Query embeddings from Qdrant
+src/api/documents.py	list_documents()	List all documents
+src/api/documents.py	delete_document()	Delete document by ID
 Key Takeaway
-ChromaDB provides:
+Qdrant Cloud provides:
 
-Fast similarity search via HNSW indexing
+✅ Persistent storage (no data loss on Space restarts)
 
-Metadata filtering for precise queries
+✅ Fast similarity search via HNSW indexing
 
-Persistent storage (when configured correctly)
+✅ Payload filtering for precise queries
 
-Simple API for CRUD operations
+✅ Free forever tier (1GB RAM, 4GB storage)
+
+✅ Production-ready architecture (client-server)
 
 For billion-scale, we would:
 
-Switch to HttpClient mode
-
-Deploy ChromaDB cluster
+Upgrade to larger Qdrant Cloud tier
 
 Implement sharding by document type
 
 Add read replicas for search queries
+
+Use multiple collections for different document categories

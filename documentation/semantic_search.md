@@ -28,9 +28,13 @@ User Question: "What is the pet policy?"
 │
 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 2. CHROMADB QUERY                                           │
-│ collection.query(query_embeddings=[question_vector])        │
-│ → Returns top_k most similar chunks                         │
+│ ### Step 2: Qdrant Query                                    │ 
+│result = client.query_points(                                │
+│    collection_name="documents",                             │
+│    query=question_embedding,                                │
+│    limit=top_k,                                             │
+│    with_payload=True                                        │
+│)                                                            │
 └─────────────────────────────────────────────────────────────┘
 │
 ▼
@@ -47,7 +51,7 @@ text
 
 ## Step 1: Embedding the Question
 
-**File:** `src/pipelines/retrieval.py` → `_search_chromadb()`
+**File:** `src/pipelines/retrieval.py` → `_search_qdrant()`
 
 ```python
 # Get embedding model (same one used for documents)

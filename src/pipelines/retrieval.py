@@ -1,4 +1,4 @@
-from src.database.chroma_client import get_collection
+from src.database.vector_client import get_vector_client, get_collection_name
 from src.pipelines.ingestion import get_embedding_model
 from src.models.llm_factory import generate_answer
 from src.models.schemas import SourceChunk
@@ -7,16 +7,13 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ================================
-# Main entry point
-# ================================
 def retrieve_and_answer(question: str, top_k: int = 3) -> dict:
     logger.info(f"Processing question: '{question}'")
 
-    chunks, metadatas = _search_chromadb(question, top_k)
+    chunks, metadatas = _search_qdrant(question, top_k)
 
     if not chunks:
-        logger.warning("No relevant chunks found in ChromaDB")
+        logger.warning("No relevant chunks found in Qdrant")
         return {
             "question": question,
             "answer": "I could not find relevant information in the uploaded documents.",
@@ -25,7 +22,6 @@ def retrieve_and_answer(question: str, top_k: int = 3) -> dict:
         }
 
     answer = generate_answer(question, chunks)
-
     sources = _build_sources(chunks, metadatas)
 
     logger.info(f"Answer ready — {len(sources)} sources used")
@@ -38,32 +34,50 @@ def retrieve_and_answer(question: str, top_k: int = 3) -> dict:
     }
 
 
-# ================================
-# Internal helpers
-# ================================
-def _search_chromadb(question: str, top_k: int) -> tuple[list[str], list[dict]]:
-    collection = get_collection()
-
+def _search_qdrant(question: str, top_k: int) -> tuple[list[str], list[dict]]:
+    client = get_vector_client()
+    collection_name = get_collection_name()
+    
     model = get_embedding_model()
     question_embedding = model.encode([question]).tolist()[0]
-
-    logger.debug(f"Searching ChromaDB — top_k: {top_k}")
-
-    results = collection.query(
-        query_embeddings=[question_embedding],
-        n_results=min(top_k, collection.count()) if collection.count() > 0 else 1,
-        include=["documents", "metadatas", "distances"]
-    )
-
-    if not results["documents"] or not results["documents"][0]:
+    
+    logger.debug(f"Searching Qdrant — top_k: {top_k}")
+    
+    try:
+        collection_info = client.get_collection(collection_name)
+        if collection_info.points_count == 0:
+            logger.warning("Qdrant collection is empty")
+            return [], []
+    except Exception as e:
+        logger.error(f"Error accessing Qdrant collection: {e}")
         return [], []
-
-    chunks = results["documents"][0]
-    metadatas = results["metadatas"][0]
-    distances = results["distances"][0]
-
+    
+    # Correct: query_points with "query" parameter
+    result = client.query_points(
+        collection_name=collection_name,
+        query=question_embedding,
+        limit=top_k,
+        with_payload=True
+    )
+    
+    if not result or not hasattr(result, 'points'):
+        return [], []
+    
+    results_list = result.points
+    
+    if not results_list:
+        return [], []
+    
+    chunks = [r.payload.get("text", "") for r in results_list]
+    metadatas = [{
+        "document_id": r.payload.get("document_id"),
+        "filename": r.payload.get("filename"),
+        "chunk_index": r.payload.get("chunk_index")
+    } for r in results_list]
+    distances = [1 - r.score for r in results_list]
+    
     chunks, metadatas = _filter_by_relevance(chunks, metadatas, distances)
-
+    
     return chunks, metadatas
 
 
