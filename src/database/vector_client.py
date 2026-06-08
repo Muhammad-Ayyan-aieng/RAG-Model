@@ -20,7 +20,7 @@ def init_vector_client() -> None:
     _client = QdrantClient(
         url=settings.QDRANT_URL,
         api_key=settings.QDRANT_API_KEY,
-        timeout=30.0,  # ← ADD THIS - increases timeout to 30 seconds
+        timeout=30.0,
     )
     
     # Create collection if it doesn't exist
@@ -44,13 +44,39 @@ def init_vector_client() -> None:
             field_type="keyword"
         )
         logger.info("Created index on 'document_id'")
+        
     except Exception as e:
         logger.info(f"Index on 'document_id' may already exist: {e}")
+
+    # NEW: Create index on user_id for filtering
+    try:
+        _client.create_payload_index(
+            collection_name=_collection_name,
+            field_name="user_id",
+            field_type="keyword"
+        )
+        logger.info("Created index on 'user_id'")
+        
+    except Exception as e:
+        logger.info(f"Index on 'user_id' may already exist: {e}")
+
+    # NEW: Create index on is_private for filtering
+    try:
+        _client.create_payload_index(
+            collection_name=_collection_name,
+            field_name="is_private",
+            field_type="bool"
+        )
+        logger.info("Created index on 'is_private'")
+        
+    except Exception as e:
+        logger.info(f"Index on 'is_private' may already exist: {e}")
     
     # Get collection info
     try:
         collection_info = _client.get_collection(_collection_name)
         logger.info(f"Qdrant ready — collection: '{_collection_name}'")
+        logger.info(f"Points in DB: {collection_info.points_count}")
         logger.info(f"Points in DB: {collection_info.points_count}")
     except Exception as e:
         logger.warning(f"Could not get collection info: {e}")
