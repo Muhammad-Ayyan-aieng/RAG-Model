@@ -7,13 +7,13 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def retrieve_and_answer(question: str, top_k: int = 3) -> dict:
-    logger.info(f"Processing question: '{question}'")
+def retrieve_and_answer(question: str, top_k: int = 3, current_user: dict = None) -> dict:
+    logger.info(f"Processing question: '{question}' for user: {current_user.get('user_id') if current_user else 'public'}")
 
-    chunks, metadatas = _search_qdrant(question, top_k)
+    chunks, metadatas = _search_qdrant(question, top_k, current_user)
 
     if not chunks:
-        logger.warning("No relevant chunks found in Qdrant")
+        logger.warning("No relevant chunks found")
         return {
             "question": question,
             "answer": "I could not find relevant information in the uploaded documents.",
@@ -34,28 +34,49 @@ def retrieve_and_answer(question: str, top_k: int = 3) -> dict:
     }
 
 
-def _search_qdrant(question: str, top_k: int) -> tuple[list[str], list[dict]]:
+def _search_qdrant(question: str, top_k: int, current_user: dict = None) -> tuple[list[str], list[dict]]:
     client = get_vector_client()
     collection_name = get_collection_name()
     
     model = get_embedding_model()
     question_embedding = model.encode([question]).tolist()[0]
     
-    logger.debug(f"Searching Qdrant — top_k: {top_k}")
+    logger.debug(f"Searching — top_k: {top_k}")
     
     try:
         collection_info = client.get_collection(collection_name)
         if collection_info.points_count == 0:
-            logger.warning("Qdrant collection is empty")
+            logger.warning("Collection is empty")
             return [], []
     except Exception as e:
-        logger.error(f"Error accessing Qdrant collection: {e}")
+        logger.error(f"Error accessing collection: {e}")
         return [], []
     
-    # Correct: query_points with "query" parameter
+    # Build filter based on user
+    query_filter = None
+    
+    if current_user:
+        user_id = current_user.get("user_id")
+        user_role = current_user.get("role")
+        
+        if user_role == "admin":
+            query_filter = None
+        else:
+            query_filter = {
+                "should": [
+                    {"key": "user_id", "match": {"value": user_id}},
+                    {"key": "is_private", "match": {"value": False}}
+                ]
+            }
+    else:
+        query_filter = {
+            "must": [{"key": "is_private", "match": {"value": False}}]
+        }
+    
     result = client.query_points(
         collection_name=collection_name,
         query=question_embedding,
+        query_filter=query_filter,
         limit=top_k,
         with_payload=True
     )
@@ -72,7 +93,9 @@ def _search_qdrant(question: str, top_k: int) -> tuple[list[str], list[dict]]:
     metadatas = [{
         "document_id": r.payload.get("document_id"),
         "filename": r.payload.get("filename"),
-        "chunk_index": r.payload.get("chunk_index")
+        "chunk_index": r.payload.get("chunk_index"),
+        "user_id": r.payload.get("user_id"),
+        "is_private": r.payload.get("is_private")
     } for r in results_list]
     distances = [1 - r.score for r in results_list]
     
@@ -87,7 +110,6 @@ def _filter_by_relevance(
     distances: list[float],
     threshold: float = 0.7
 ) -> tuple[list[str], list[dict]]:
-
     filtered_chunks = []
     filtered_metadatas = []
 
@@ -96,17 +118,11 @@ def _filter_by_relevance(
             filtered_chunks.append(chunk)
             filtered_metadatas.append(metadata)
             logger.debug(f"Chunk accepted — distance: {distance:.3f}")
-        else:
-            logger.debug(f"Chunk rejected — distance: {distance:.3f} exceeds threshold")
 
     return filtered_chunks, filtered_metadatas
 
 
-def _build_sources(
-    chunks: list[str],
-    metadatas: list[dict]
-) -> list[SourceChunk]:
-
+def _build_sources(chunks: list[str], metadatas: list[dict]) -> list[SourceChunk]:
     sources = []
 
     for chunk, metadata in zip(chunks, metadatas):

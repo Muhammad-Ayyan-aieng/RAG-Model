@@ -20,6 +20,7 @@ def init_vector_client() -> None:
     _client = QdrantClient(
         url=settings.QDRANT_URL,
         api_key=settings.QDRANT_API_KEY,
+        timeout=30.0,  # ← ADD THIS - increases timeout to 30 seconds
     )
     
     # Create collection if it doesn't exist
@@ -35,9 +36,7 @@ def init_vector_client() -> None:
     except Exception as e:
         logger.info(f"Collection '{_collection_name}' already exists: {e}")
     
-    # ================================
     # Create index on document_id for fast deletion
-    # ================================
     try:
         _client.create_payload_index(
             collection_name=_collection_name,
@@ -49,9 +48,12 @@ def init_vector_client() -> None:
         logger.info(f"Index on 'document_id' may already exist: {e}")
     
     # Get collection info
-    collection_info = _client.get_collection(_collection_name)
-    logger.info(f"Qdrant ready — collection: '{_collection_name}'")
-    logger.info(f"Points in DB: {collection_info.points_count}")
+    try:
+        collection_info = _client.get_collection(_collection_name)
+        logger.info(f"Qdrant ready — collection: '{_collection_name}'")
+        logger.info(f"Points in DB: {collection_info.points_count}")
+    except Exception as e:
+        logger.warning(f"Could not get collection info: {e}")
 
 
 def get_vector_client():

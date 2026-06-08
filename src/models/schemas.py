@@ -75,6 +75,6 @@ class QueryResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     environment: str
-    chromadb: str
+    qdrant: str
     total_documents: int
     total_chunks: int

@@ -32,8 +32,14 @@ def get_embedding_model() -> SentenceTransformer:
 # ================================
 # Main entry point
 # ================================
-def ingest_document(text: str, filename: str, content_hash: str = None) -> dict:
-    logger.info(f"Starting ingestion: {filename}")
+def ingest_document(
+    text: str, 
+    filename: str, 
+    content_hash: str = None,
+    user_id: str = None,           # NEW: Who owns this document
+    is_private: bool = False       # NEW: Private or public
+) -> dict:
+    logger.info(f"Starting ingestion: {filename} for user: {user_id}")
 
     # Generate hash if not provided
     if content_hash is None:
@@ -54,7 +60,9 @@ def ingest_document(text: str, filename: str, content_hash: str = None) -> dict:
         document_id=document_id,
         filename=filename,
         uploaded_at=uploaded_at,
-        content_hash=content_hash
+        content_hash=content_hash,
+        user_id=user_id,           # NEW: Pass user_id
+        is_private=is_private      # NEW: Pass is_private
     )
 
     logger.info(
@@ -117,16 +125,17 @@ def _store_in_qdrant(
     document_id: str,
     filename: str,
     uploaded_at: str,
-    content_hash: str = None
+    content_hash: str = None,
+    user_id: str = None,           # NEW
+    is_private: bool = False       # NEW
 ) -> None:
     client = get_vector_client()
     collection_name = get_collection_name()
     
     points = []
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        from qdrant_client.models import PointStruct
         point = PointStruct(
-            id = str(uuid.uuid4())  ,
+            id=str(uuid.uuid4()),
             vector=embedding,
             payload={
                 "document_id": document_id,
@@ -134,10 +143,12 @@ def _store_in_qdrant(
                 "chunk_index": i,
                 "uploaded_at": uploaded_at,
                 "content_hash": content_hash,
-                "text": chunk
+                "text": chunk,
+                "user_id": user_id,           # NEW: Track document owner
+                "is_private": is_private      # NEW: Public/Private flag
             }
         )
         points.append(point)
     
     client.upsert(collection_name=collection_name, points=points)
-    logger.debug(f"Stored {len(chunks)} chunks in Qdrant")
+    logger.debug(f"Stored {len(chunks)} chunks in Qdrant for user: {user_id}")
