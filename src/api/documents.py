@@ -60,6 +60,7 @@ def get_user_documents(user_id: str):
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     files: list[UploadFile] = File(...),
+    x_admin_password: str = Header(None),
     current_user: dict = Depends(get_current_user),
     is_private: bool = False
 ):
