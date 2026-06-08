@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, Header
 from src.core.auth import get_user_role, require_admin
 from src.core.limiter import validate_upload
 from src.pipelines.ingestion import ingest_document
@@ -335,6 +335,146 @@ async def list_documents(
 
 
 # ================================
+# ADMIN ONLY: Get all documents with user info
+# ================================
+@router.get("/admin/all")
+async def admin_list_all_documents(
+    x_admin_password: str = Header(...)
+):
+    """
+    ADMIN ONLY: Get ALL documents with user information.
+    Shows which user uploaded each document and privacy status.
+    """
+    from src.config import settings
+    
+    # Verify admin password
+    if x_admin_password != settings.ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin password"
+        )
+    
+    logger.info("Admin fetching all documents with user info")
+    
+    try:
+        points = get_all_points()
+        
+        if not points:
+            return {
+                "total": 0,
+                "documents": []
+            }
+        
+        # Group by document_id and collect all info
+        documents_dict = {}
+        for point in points:
+            payload = point.payload
+            if not payload:
+                continue
+                
+            doc_id = payload.get("document_id")
+            if not doc_id:
+                continue
+            
+            if doc_id not in documents_dict:
+                # Get user_id (could be None for public uploads)
+                user_id = payload.get("user_id")
+                is_private = payload.get("is_private", False)
+                
+                documents_dict[doc_id] = {
+                    "document_id": doc_id,
+                    "filename": payload.get("filename", "unknown"),
+                    "chunks_count": 1,
+                    "uploaded_at": payload.get("uploaded_at", "unknown"),
+                    "user_id": user_id if user_id else "public",
+                    "is_private": is_private,
+                    "user_display": user_id[:8] + "..." if user_id and len(user_id) > 8 else (user_id if user_id else "Public User")
+                }
+            else:
+                documents_dict[doc_id]["chunks_count"] += 1
+        
+        # Convert to list and sort by uploaded_at (newest first)
+        documents = list(documents_dict.values())
+        documents.sort(key=lambda x: x.get("uploaded_at", ""), reverse=True)
+        
+        logger.info(f"Admin fetched {len(documents)} documents")
+        
+        return {
+            "total": len(documents),
+            "documents": documents
+        }
+        
+    except Exception as e:
+        logger.error(f"Admin list documents failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve documents"
+        )
+
+
+# ================================
+# ADMIN ONLY: Get user statistics
+# ================================
+@router.get("/admin/stats")
+async def admin_get_stats(
+    x_admin_password: str = Header(...)
+):
+    """
+    ADMIN ONLY: Get system statistics including users, uploads, queries.
+    """
+    from src.config import settings
+    
+    # Verify admin password
+    if x_admin_password != settings.ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin password"
+        )
+    
+    try:
+        points = get_all_points()
+        
+        # Collect statistics
+        unique_users = set()
+        total_uploads = 0
+        unique_documents = set()
+        
+        for point in points:
+            payload = point.payload
+            if not payload:
+                continue
+            
+            user_id = payload.get("user_id")
+            if user_id:
+                unique_users.add(user_id)
+            
+            doc_id = payload.get("document_id")
+            if doc_id:
+                unique_documents.add(doc_id)
+                if doc_id not in unique_documents:
+                    total_uploads += 1
+        
+        # Get total queries from your database if you track them
+        # This is a placeholder - implement based on your query tracking
+        total_queries = 0  # You can add query tracking later
+        
+        return {
+            "total_users": len(unique_users),
+            "total_documents": len(unique_documents),
+            "total_uploads": len(unique_documents),  # Each document is one upload
+            "total_queries": total_queries,
+            "total_chunks": len(points)
+        }
+        
+    except Exception as e:
+        logger.error(f"Admin stats failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve statistics"
+        )
+
+
+# ================================
 # Delete document (Owner or Admin)
 # ================================
 @router.delete("/{document_id}", response_model=DocumentDeleteResponse)
@@ -393,6 +533,72 @@ async def delete_document(
 
     except Exception as e:
         logger.error(f"Delete failed for {document_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete document"
+        )
+
+
+# ================================
+# ADMIN ONLY: Delete any document by ID
+# ================================
+@router.delete("/admin/{document_id}")
+async def admin_delete_document(
+    document_id: str,
+    x_admin_password: str = Header(...)
+):
+    """
+    ADMIN ONLY: Delete any document by ID (bypasses ownership checks).
+    """
+    from src.config import settings
+    
+    # Verify admin password
+    if x_admin_password != settings.ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin password"
+        )
+    
+    logger.info(f"Admin delete request — document_id: {document_id}")
+    
+    try:
+        client = get_vector_client()
+        collection_name = get_collection_name()
+        
+        search_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [{"key": "document_id", "match": {"value": document_id}}]
+            },
+            limit=10000,
+            with_payload=True
+        )
+        
+        points = search_result[0]
+        if not points:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Document '{document_id}' not found"
+            )
+        
+        point_ids = [point.id for point in points]
+        client.delete(
+            collection_name=collection_name,
+            points_selector=point_ids
+        )
+        
+        logger.info(f"Admin deleted document: {document_id} — {len(points)} chunks removed")
+        
+        return {
+            "message": "Document deleted successfully",
+            "document_id": document_id,
+            "chunks_deleted": len(points)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin delete failed for {document_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete document"
