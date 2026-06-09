@@ -18,6 +18,7 @@ class DocumentInfo(BaseModel):
     filename: str
     chunks_count: int
     uploaded_at: str
+    is_private: bool = False
 
 
 class DocumentListResponse(BaseModel):

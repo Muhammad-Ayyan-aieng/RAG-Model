@@ -4,6 +4,7 @@ from src.core.limiter import validate_upload
 from src.pipelines.ingestion import ingest_document
 from src.database.vector_client import get_vector_client, get_collection_name
 from src.utils.file_parser import extract_text
+from src.config import settings
 from src.utils.text_cleaner import clean_text
 from src.models.schemas import (
     DocumentUploadResponse,
@@ -55,7 +56,7 @@ def get_user_documents(user_id: str):
 
 
 # ================================
-# Upload document (Authenticated - Private)
+# Upload document (Authenticated - Private/Public)
 # ================================
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
@@ -63,13 +64,22 @@ async def upload_document(
     x_admin_password: str = Header(None),
     current_user: dict = Depends(get_current_user),
     is_private: bool = False
-):
-    """
-    Upload a document. Authenticated users only.
-    
-    - is_private: If True, only you and admin can see this document
-    """
-    validate_upload(files, current_user.get("role"))
+):    
+    # CHECK ADMIN FIRST - bypass everything
+    if x_admin_password and x_admin_password == settings.ADMIN_PASSWORD:
+        # Admin upload - no token needed
+        user_id = "admin"
+        user_role = "admin"
+        logger.info(f"Admin upload: {files[0].filename}")
+    else:
+        # Normal user - use token
+        user_id = current_user.get("user_id")
+        user_role = current_user.get("role")
+        logger.info(f"User upload: {files[0].filename} - {user_id}")
+
+    # Validate upload limits (admin has no limits)
+    if user_role != "admin":
+        validate_upload(files, user_role)
 
     if len(files) > 1:
         raise HTTPException(
@@ -78,15 +88,12 @@ async def upload_document(
         )
 
     file = files[0]
-    user_id = current_user.get("user_id")
-    user_role = current_user.get("role")
-
-    logger.info(f"Upload request — file: {file.filename} user: {user_id} role: {user_role}")
-
+    
     client = get_vector_client()
     collection_name = get_collection_name()
     
-    try:
+    # Check for duplicate filename (same user only)
+    if user_role != "admin":
         search_result = client.scroll(
             collection_name=collection_name,
             scroll_filter={
@@ -98,13 +105,11 @@ async def upload_document(
             limit=1
         )
         if search_result[0]:
-            logger.warning(f"Duplicate upload blocked: {file.filename}")
+            logger.warning(f"Duplicate filename blocked: {file.filename}")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Document '{file.filename}' already exists. Delete it first if you want to re-upload."
+                detail=f"You already have a document named '{file.filename}'. Please delete it first or rename your file."
             )
-    except Exception as e:
-        pass
 
     try:
         raw_text = await extract_text(file)
@@ -118,26 +123,42 @@ async def upload_document(
 
         content_hash = hashlib.md5(clean.encode()).hexdigest()
         
-        try:
-            hash_result = client.scroll(
-                collection_name=collection_name,
-                scroll_filter={
-                    "must": [
-                        {"key": "content_hash", "match": {"value": content_hash}},
-                        {"key": "user_id", "match": {"value": user_id}}
-                    ]
-                },
-                limit=1
-            )
-            if hash_result[0]:
-                existing_filename = hash_result[0][0].payload.get("filename", "unknown")
-                logger.warning(f"Duplicate content blocked: {file.filename}")
+        # Check for duplicate content with privacy logic
+        # First check if this content exists anywhere
+        hash_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [{"key": "content_hash", "match": {"value": content_hash}}]
+            },
+            limit=1
+        )
+        
+        if hash_result[0]:
+            existing_filename = hash_result[0][0].payload.get("filename", "unknown")
+            existing_owner = hash_result[0][0].payload.get("user_id", "unknown")
+            existing_is_private = hash_result[0][0].payload.get("is_private", False)
+            
+            # ADMIN: Can upload anything (no limits)
+            if user_role == "admin":
+                logger.info(f"Admin uploading duplicate content - allowed")
+                # Continue with upload
+            
+            # SAME USER: Block duplicate
+            elif existing_owner == user_id:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Document content already exists in '{existing_filename}'"
+                    detail=f"You have already uploaded this content in '{existing_filename}'. Please delete it first."
                 )
-        except Exception:
-            pass
+            
+            # DIFFERENT USER: Check privacy of original
+            elif existing_is_private == False:  # Original is PUBLIC
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"This content already exists as a PUBLIC document '{existing_filename}' (uploaded by another user). Duplicate public content is not allowed to save storage."
+                )
+            else:  # Original is PRIVATE - allow upload
+                logger.info(f"Content exists but is private - allowing upload for different user")
+                # Continue with upload
 
         result = ingest_document(
             text=clean, 
@@ -158,14 +179,12 @@ async def upload_document(
 
     except HTTPException:
         raise
-
     except ValueError as e:
         logger.warning(f"Upload validation error: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-
     except Exception as e:
         logger.error(f"Upload failed for {file.filename}: {e}")
         raise HTTPException(
@@ -199,22 +218,20 @@ async def upload_document_public(
     client = get_vector_client()
     collection_name = get_collection_name()
     
-    try:
-        search_result = client.scroll(
-            collection_name=collection_name,
-            scroll_filter={
-                "must": [{"key": "filename", "match": {"value": file.filename}}]
-            },
-            limit=1
+    # Check for duplicate filename
+    search_result = client.scroll(
+        collection_name=collection_name,
+        scroll_filter={
+            "must": [{"key": "filename", "match": {"value": file.filename}}]
+        },
+        limit=1
+    )
+    if search_result[0]:
+        logger.warning(f"Duplicate filename blocked: {file.filename}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document '{file.filename}' already exists."
         )
-        if search_result[0]:
-            logger.warning(f"Duplicate upload blocked: {file.filename}")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Document '{file.filename}' already exists."
-            )
-    except Exception as e:
-        pass
     
     try:
         raw_text = await extract_text(file)
@@ -228,23 +245,21 @@ async def upload_document_public(
         
         content_hash = hashlib.md5(clean.encode()).hexdigest()
         
-        try:
-            hash_result = client.scroll(
-                collection_name=collection_name,
-                scroll_filter={
-                    "must": [{"key": "content_hash", "match": {"value": content_hash}}]
-                },
-                limit=1
+        # Check for duplicate content (public uploads always block duplicates)
+        hash_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter={
+                "must": [{"key": "content_hash", "match": {"value": content_hash}}]
+            },
+            limit=1
+        )
+        if hash_result[0]:
+            existing_filename = hash_result[0][0].payload.get("filename", "unknown")
+            logger.warning(f"Duplicate content blocked: {file.filename}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"This content already exists in '{existing_filename}'. Duplicate not allowed."
             )
-            if hash_result[0]:
-                existing_filename = hash_result[0][0].payload.get("filename", "unknown")
-                logger.warning(f"Duplicate content blocked: {file.filename}")
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Document content already exists in '{existing_filename}'"
-                )
-        except Exception:
-            pass
         
         result = ingest_document(
             text=clean, 
@@ -315,7 +330,8 @@ async def list_documents(
                     "document_id": doc_id,
                     "filename": payload.get("filename", "unknown"),
                     "chunks_count": 1,
-                    "uploaded_at": payload.get("uploaded_at", "unknown")
+                    "uploaded_at": payload.get("uploaded_at", "unknown"),
+                    "is_private": payload.get("is_private", False)
                 }
             else:
                 documents_dict[doc_id]["chunks_count"] += 1
@@ -346,8 +362,6 @@ async def admin_list_all_documents(
     ADMIN ONLY: Get ALL documents with user information.
     Shows which user uploaded each document and privacy status.
     """
-    from src.config import settings
-    
     # Verify admin password
     if x_admin_password != settings.ADMIN_PASSWORD:
         raise HTTPException(
@@ -423,8 +437,6 @@ async def admin_get_stats(
     """
     ADMIN ONLY: Get system statistics including users, uploads, queries.
     """
-    from src.config import settings
-    
     # Verify admin password
     if x_admin_password != settings.ADMIN_PASSWORD:
         raise HTTPException(
@@ -437,7 +449,6 @@ async def admin_get_stats(
         
         # Collect statistics
         unique_users = set()
-        total_uploads = 0
         unique_documents = set()
         
         for point in points:
@@ -446,24 +457,18 @@ async def admin_get_stats(
                 continue
             
             user_id = payload.get("user_id")
-            if user_id:
+            if user_id and user_id != "admin":
                 unique_users.add(user_id)
             
             doc_id = payload.get("document_id")
             if doc_id:
                 unique_documents.add(doc_id)
-                if doc_id not in unique_documents:
-                    total_uploads += 1
-        
-        # Get total queries from your database if you track them
-        # This is a placeholder - implement based on your query tracking
-        total_queries = 0  # You can add query tracking later
         
         return {
             "total_users": len(unique_users),
             "total_documents": len(unique_documents),
-            "total_uploads": len(unique_documents),  # Each document is one upload
-            "total_queries": total_queries,
+            "total_uploads": len(unique_documents),
+            "total_queries": 0,
             "total_chunks": len(points)
         }
         
@@ -531,7 +536,6 @@ async def delete_document(
 
     except HTTPException:
         raise
-
     except Exception as e:
         logger.error(f"Delete failed for {document_id}: {e}")
         raise HTTPException(
@@ -551,8 +555,6 @@ async def admin_delete_document(
     """
     ADMIN ONLY: Delete any document by ID (bypasses ownership checks).
     """
-    from src.config import settings
-    
     # Verify admin password
     if x_admin_password != settings.ADMIN_PASSWORD:
         raise HTTPException(

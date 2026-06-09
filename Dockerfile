@@ -11,16 +11,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your code
+# Copy source code only — no frontend
 COPY src/ ./src/
-COPY frontend/ ./frontend/
 
-# Create directory for ChromaDB
-RUN mkdir -p /app/chroma_data
-
-# Environment variables (override at runtime)
+# Environment variables
 ENV PYTHONPATH=/app
-ENV CHROMA_PATH=/app/chroma_data
 
 # Expose port
 EXPOSE 7860

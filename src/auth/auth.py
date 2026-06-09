@@ -2,28 +2,26 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import HTTPException, status, Depends
+from fastapi import Request, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from src.config import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Password hashing setup - using sha256_crypt instead of bcrypt to avoid 72-byte limit
+# Password hashing setup
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
-# JWT setup
-security = HTTPBearer()
+# JWT setup - auto_error=False makes it optional
+security = HTTPBearer(auto_error=False)
 ALGORITHM = "HS256"
 
 
 def hash_password(password: str) -> str:
     """Hash a plain text password."""
-    # Validate input
     if not password or not isinstance(password, str):
         raise ValueError("Password must be a non-empty string")
     
-    # Ensure password is string and handle encoding
     if len(password) < 4:
         raise ValueError("Password must be at least 4 characters")
     
@@ -82,8 +80,30 @@ def decode_access_token(token: str) -> dict:
         )
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
-    """FastAPI dependency to get current user from JWT token."""
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> dict:
+    """FastAPI dependency to get current user from JWT token or admin password."""
+    from src.config import settings
+    
+    # Check for admin password in headers FIRST
+    admin_password = request.headers.get("x-admin-password")
+    if admin_password and admin_password == settings.ADMIN_PASSWORD:
+        logger.info("Admin access granted via password header")
+        return {
+            "user_id": "admin",
+            "email": "admin@system.local",
+            "role": "admin"
+        }
+    
+    # If no admin password, check Bearer token
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please login or use admin password."
+        )
+    
     token = credentials.credentials
     payload = decode_access_token(token)
     
